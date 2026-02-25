@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Brady的番茄专注 to do</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f7;
+      margin: 0;
+      padding: 24px;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      background: #ffffff;
+      max-width: 640px;
+      width: 100%;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+      padding: 24px 28px 28px;
+    }
+    .icon-large {
+      font-size: 80px;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 24px;
+      text-align: center;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    label {
+      font-size: 14px;
+    }
+    input[type="number"] {
+      width: 80px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+    button {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      background: #007aff;
+      color: white;
+      transition: background 0.15s ease;
+    }
+    button.secondary {
+      background: #34c759;
+    }
+    button.danger {
+      background: #ff3b30;
+    }
+    button:disabled {
+      background: #b0b0b0;
+      cursor: not-allowed;
+    }
+    button:hover:not(:disabled) {
+      filter: brightness(0.95);
+    }
+    .status {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 12px;
+    }
+    .countdown {
+      font-size: 40px;
+      font-weight: 600;
+      text-align: center;
+      margin: 8px 0 4px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 16px 0 8px;
+    }
+    pre {
+      background: #1e1e1e;
+      color: #e5e5e5;
+      padding: 12px;
+      border-radius: 8px;
+      max-height: 260px;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon-large" aria-label="Pomodoro Tomato" title="Pomodoro Tomato">🍅</div>
+    <h1>Brady的番茄专注 to do</h1>
+
+    <div class="row">
+      <label for="minutes">Minutes:</label>
+      <input id="minutes" type="number" value="25" min="1" />
+      <button id="startBtn">Start</button>
+      <button id="pomodoroBtn" class="secondary">Pomodoro</button>
+      <button id="statsBtn">Stats</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="stopBtn" class="danger">Stop</button>
+    </div>
+
+    <div class="countdown" id="countdown">00:00</div>
+    <div class="status" id="statusText">Status: unknown</div>
+
+    <div class="section-title">Logs / Stats</div>
+    <pre id="log"></pre>
+  </div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('statusText');
+    const countdownEl = document.getElementById('countdown');
+    const startBtn = document.getElementById('startBtn');
+    const pomodoroBtn = document.getElementById('pomodoroBtn');
+    const statsBtn = document.getElementById('statsBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    function appendLog(text) {
+      const now = new Date().toLocaleTimeString();
+      logEl.textContent += `[${now}] ${text}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function renderCountdown(remainingSeconds) {
+      if (remainingSeconds == null || remainingSeconds <= 0) {
+        countdownEl.textContent = '00:00';
+        return;
+      }
+      const safe = Math.max(0, Math.floor(remainingSeconds));
+      const m = Math.floor(safe / 60);
+      const s = safe % 60;
+      countdownEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    async function refreshStatus() {
+      try {
+        const res = await fetch('/status');
+        const data = await res.json();
+        const status = data.status || (data.running ? 'running' : 'idle');
+        const remaining = data.remaining_seconds;
+
+        if (status === 'running') {
+          statusEl.textContent = 'Status: running';
+          startBtn.disabled = true;
+          pomodoroBtn.disabled = true;
+          pauseBtn.disabled = false;
+          pauseBtn.textContent = 'Pause';
+        } else if (status === 'paused') {
+          statusEl.textContent = 'Status: paused';
+          startBtn.disabled = true;
+          pomodoroBtn.disabled = true;
+          pauseBtn.disabled = false;
+          pauseBtn.textContent = 'Resume';
+        } else {
+          statusEl.textContent = 'Status: idle';
+          startBtn.disabled = false;
+          pomodoroBtn.disabled = false;
+          pauseBtn.disabled = false;
+          pauseBtn.textContent = 'Pause';
+        }
+
+        renderCountdown(remaining);
+      } catch (e) {
+        statusEl.textContent = 'Status: error';
+      }
+    }
+
+    startBtn.addEventListener('click', async () => {
+      const minutesInput = document.getElementById('minutes');
+      const minutes = parseInt(minutesInput.value || '25', 10);
+      appendLog(`POST /start {minutes: ${minutes}}`);
+      try {
+        const res = await fetch('/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ minutes }),
+        });
+        const data = await res.json();
+        appendLog(data.message || JSON.stringify(data));
+      } catch (e) {
+        appendLog('Error: failed to call /start');
+      }
+      refreshStatus();
+    });
+
+    pomodoroBtn.addEventListener('click', async () => {
+      appendLog('POST /pomodoro');
+      try {
+        const res = await fetch('/pomodoro', { method: 'POST' });
+        const data = await res.json();
+        appendLog(data.message || JSON.stringify(data));
+      } catch (e) {
+        appendLog('Error: failed to call /pomodoro');
+      }
+      refreshStatus();
+    });
+
+    statsBtn.addEventListener('click', async () => {
+      appendLog('GET /stats');
+      try {
+        const res = await fetch('/stats');
+        const data = await res.json();
+        if (data.ok) {
+          appendLog(data.output || '(no output)');
+        } else {
+          appendLog('Error: ' + (data.output || 'failed to get stats'));
+        }
+      } catch (e) {
+        appendLog('Error: failed to call /stats');
+      }
+    });
+
+    pauseBtn.addEventListener('click', async () => {
+      const isPaused = pauseBtn.textContent === 'Resume';
+      if (isPaused) {
+        appendLog('POST /resume');
+        try {
+          const res = await fetch('/resume', { method: 'POST' });
+          const data = await res.json();
+          appendLog(data.message || JSON.stringify(data));
+        } catch (e) {
+          appendLog('Error: failed to call /resume');
+        }
+      } else {
+        appendLog('POST /pause');
+        try {
+          const res = await fetch('/pause', { method: 'POST' });
+          const data = await res.json();
+          appendLog(data.message || JSON.stringify(data));
+        } catch (e) {
+          appendLog('Error: failed to call /pause');
+        }
+      }
+      refreshStatus();
+    });
+
+    stopBtn.addEventListener('click', async () => {
+      appendLog('POST /stop');
+      try {
+        const res = await fetch('/stop', { method: 'POST' });
+        const data = await res.json();
+        appendLog(data.message || JSON.stringify(data));
+      } catch (e) {
+        appendLog('Error: failed to call /stop');
+      }
+      countdownEl.textContent = '00:00';
+      statusEl.textContent = 'Status: idle';
+      refreshStatus();
+    });
+
+    refreshStatus();
+    setInterval(refreshStatus, 1000);
+  </script>
+</body>
+</html>
+
