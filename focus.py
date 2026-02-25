@@ -27,6 +27,12 @@ def get_state_file_path() -> str:
     return os.path.join(script_dir, "focus_state.json")
 
 
+def get_history_file_path() -> str:
+    """返回专注历史文件的绝对路径。"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, "focus_history.json")
+
+
 def ensure_data_file_exists() -> None:
     """如果数据文件不存在，则创建一个空的 JSON 列表。"""
     path = get_data_file_path()
@@ -96,26 +102,70 @@ def _idle_state() -> dict:
     return {
         "status": "idle",
         "pid": None,
-        "remaining_seconds": None,
-        "started_at": None,
+        "start_time": None,
+        "duration_minutes": None,
+        "end_time": None,
         "mode": None,
     }
 
 
-def _write_running_state(pid: int, total_seconds: int, mode: str) -> None:
-    now = datetime.now().isoformat(timespec="seconds")
+def _write_running_state(pid: int, duration_minutes: float, mode: str) -> None:
+    """写入运行状态，基于时间戳计算。
+    
+    :param duration_minutes: 持续时间（分钟），可以是整数或浮点数
+    """
+    now = datetime.now()
+    start_time = now.isoformat(timespec="seconds")
+    end_time = now.timestamp() + duration_minutes * 60
     save_state({
         "status": "running",
         "pid": pid,
-        "remaining_seconds": total_seconds,
-        "started_at": now,
-        "total_seconds": total_seconds,
+        "start_time": start_time,
+        "duration_minutes": duration_minutes,
+        "end_time": end_time,
         "mode": mode,
     })
 
 
 def _write_idle_state() -> None:
     save_state(_idle_state())
+
+
+def load_history():
+    """加载专注历史记录。"""
+    path = get_history_file_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_history(history: list) -> None:
+    """保存专注历史记录。"""
+    path = get_history_file_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def add_history_record(start_time: str, duration_minutes: int, completed: bool) -> None:
+    """添加一条专注历史记录。"""
+    history = load_history()
+    record = {
+        "start_time": start_time,
+        "duration_minutes": duration_minutes,
+        "completed": completed,
+    }
+    history.append(record)
+    save_history(history)
 
 
 def add_session(minutes: int) -> None:
@@ -138,10 +188,11 @@ def run_timer(minutes: int, propagate_interrupt: bool = False) -> None:
     :param propagate_interrupt: 为 True 时，Ctrl+C 会继续向外抛出，方便上层统一处理。
     """
     total_seconds = minutes * 60
+    start_time = datetime.now().isoformat(timespec="seconds")
 
     print(f"开始专注 {minutes} 分钟。按 Ctrl+C 可中途结束（不会记录本次专注）。")
 
-    _write_running_state(os.getpid(), total_seconds, "start")
+    _write_running_state(os.getpid(), minutes, "start")
 
     try:
         for remaining in range(total_seconds, 0, -1):
@@ -160,6 +211,7 @@ def run_timer(minutes: int, propagate_interrupt: bool = False) -> None:
 
     _write_idle_state()
     add_session(minutes)
+    add_history_record(start_time, minutes, completed=True)
     print(f"⏰ 专注 {minutes} 分钟结束！干得好！")
 
 
@@ -168,9 +220,16 @@ def run_timer_seconds(seconds: int, propagate_interrupt: bool = False) -> None:
     if seconds <= 0:
         return
 
+    start_time = datetime.now().isoformat(timespec="seconds")
+    # 将秒数转换为分钟（向上取整，至少1分钟）
+    duration_minutes = max(1, (seconds + 59) // 60)
+
     print(f"继续专注 {seconds} 秒。按 Ctrl+C 可中途结束。")
 
-    _write_running_state(os.getpid(), seconds, "start")
+    # 计算实际的持续时间（分钟），用于状态存储
+    # 但实际计时仍按秒数进行
+    actual_duration_minutes = seconds / 60.0  # 精确的分钟数
+    _write_running_state(os.getpid(), actual_duration_minutes, "start")
 
     try:
         for remaining in range(seconds, 0, -1):
@@ -188,19 +247,20 @@ def run_timer_seconds(seconds: int, propagate_interrupt: bool = False) -> None:
         return
 
     _write_idle_state()
-    add_session(max(1, seconds // 60))
+    add_session(duration_minutes)
+    add_history_record(start_time, duration_minutes, completed=True)
     print(f"⏰ 专注结束！干得好！")
 
 
 def run_break(minutes: int, is_long: bool = False, propagate_interrupt: bool = False) -> None:
     """运行休息倒计时，不记录到专注统计中。"""
-    total_seconds = minutes * 60
     label = "长休息" if is_long else "休息"
 
     print(f"开始{label} {minutes} 分钟。按 Ctrl+C 可中途结束。")
 
-    _write_running_state(os.getpid(), total_seconds, "pomodoro")
+    _write_running_state(os.getpid(), minutes, "pomodoro")
 
+    total_seconds = minutes * 60
     try:
         for remaining in range(total_seconds, 0, -1):
             m, s = divmod(remaining, 60)
@@ -289,7 +349,7 @@ def _is_process_alive(pid) -> bool:
 
 
 def get_status_dict():
-    """返回当前计时状态的字典，用于 status 命令和 Web UI。"""
+    """返回当前计时状态的字典，基于时间戳动态计算剩余时间。"""
     state = load_state()
     status = state.get("status", "idle")
 
@@ -297,6 +357,7 @@ def get_status_dict():
         return {"status": "idle", "running": False, "remaining_seconds": None}
 
     if status == "paused":
+        # 暂停状态：使用保存的剩余秒数
         remaining = state.get("remaining_seconds")
         if isinstance(remaining, (int, float)) and remaining > 0:
             return {"status": "paused", "running": False, "remaining_seconds": int(remaining)}
@@ -309,27 +370,19 @@ def get_status_dict():
             save_state(_idle_state())
             return {"status": "idle", "running": False, "remaining_seconds": None}
 
-        started_at = state.get("started_at")
-        total_seconds = state.get("total_seconds")
-        if not started_at or not isinstance(total_seconds, (int, float)):
+        # 基于时间戳计算剩余时间
+        end_time = state.get("end_time")
+        if not isinstance(end_time, (int, float)):
             save_state(_idle_state())
             return {"status": "idle", "running": False, "remaining_seconds": None}
 
-        try:
-            start_ts = datetime.fromisoformat(started_at).timestamp()
-        except (TypeError, ValueError):
-            save_state(_idle_state())
-            return {"status": "idle", "running": False, "remaining_seconds": None}
-
-        elapsed = time.time() - start_ts
-        remaining = max(0, int(total_seconds - elapsed))
+        now = time.time()
+        remaining = max(0, int(end_time - now))
 
         if remaining <= 0:
             save_state(_idle_state())
             return {"status": "idle", "running": False, "remaining_seconds": None}
 
-        state["remaining_seconds"] = remaining
-        save_state(state)
         return {"status": "running", "running": True, "remaining_seconds": remaining}
 
     save_state(_idle_state())
@@ -395,6 +448,10 @@ def main(argv=None) -> None:
         status_info = get_status_dict()
         # 只输出 JSON，方便 Web 端解析
         print(json.dumps(status_info, ensure_ascii=False))
+    elif command == "history":
+        history = load_history()
+        # 只输出 JSON，方便 Web 端解析
+        print(json.dumps(history, ensure_ascii=False))
     else:
         print(f"未知命令：{command}")
         print_usage()

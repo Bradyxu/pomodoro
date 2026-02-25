@@ -94,7 +94,7 @@ def _do_stop() -> str:
             _kill_process_group(pid)
             _current_process = None
 
-    _save_state({"status": "idle", "pid": None, "remaining_seconds": None, "started_at": None, "mode": None})
+    _save_state({"status": "idle", "pid": None, "start_time": None, "duration_minutes": None, "end_time": None, "mode": None})
     with _process_lock:
         _current_process = None
     return "stopped"
@@ -143,6 +143,23 @@ class FocusRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
+    def _send_json_response(self, success: bool, data=None, error: str = None, status_code: int = 200):
+        """统一发送 JSON 响应格式。"""
+        try:
+            resp = {
+                "success": success,
+                "data": data,
+                "error": error
+            }
+            self._set_json_headers(status_code)
+            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+        except Exception as e:
+            # 如果连发送响应都失败，记录错误但不抛出
+            try:
+                self.send_error(500, "Internal server error")
+            except:
+                pass
+
     def _set_html_headers(self, status_code=200):
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -158,34 +175,42 @@ class FocusRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
 
-        if path in ("/", "/index.html"):
-            self._serve_index()
-        elif path == "/stats":
-            self._handle_stats()
-        elif path == "/status":
-            self._handle_status()
-        else:
-            self.send_error(404, "Not Found")
+            if path in ("/", "/index.html"):
+                self._serve_index()
+            elif path == "/stats":
+                self._handle_stats()
+            elif path == "/status":
+                self._handle_status()
+            elif path == "/history":
+                self._handle_history()
+            else:
+                self._send_json_response(False, None, "Not Found", 404)
+        except Exception as e:
+            self._send_json_response(False, None, f"Internal error: {str(e)}", 500)
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
 
-        if path == "/start":
-            self._handle_start()
-        elif path == "/pomodoro":
-            self._handle_pomodoro()
-        elif path == "/pause":
-            self._handle_pause()
-        elif path == "/resume":
-            self._handle_resume()
-        elif path == "/stop":
-            self._handle_stop()
-        else:
-            self.send_error(404, "Not Found")
+            if path == "/start":
+                self._handle_start()
+            elif path == "/pomodoro":
+                self._handle_pomodoro()
+            elif path == "/pause":
+                self._handle_pause()
+            elif path == "/resume":
+                self._handle_resume()
+            elif path == "/stop":
+                self._handle_stop()
+            else:
+                self._send_json_response(False, None, "Not Found", 404)
+        except Exception as e:
+            self._send_json_response(False, None, f"Internal error: {str(e)}", 500)
 
     # ---- 具体处理函数 ----
 
@@ -214,159 +239,186 @@ class FocusRequestHandler(BaseHTTPRequestHandler):
             return {}
 
     def _handle_start(self):
-        body = self._read_json_body()
-        minutes = body.get("minutes", 25)
         try:
-            minutes = int(minutes)
-            if minutes <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": "minutes 必须是正整数。"}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            body = self._read_json_body()
+            minutes = body.get("minutes", 25)
+            try:
+                minutes = int(minutes)
+                if minutes <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._send_json_response(False, None, "minutes 必须是正整数。", 400)
+                return
 
-        state = _load_state()
-        if state.get("status") in ("running", "paused"):
-            _do_stop()
+            state = _load_state()
+            if state.get("status") in ("running", "paused"):
+                _do_stop()
 
-        remaining_seconds = minutes * 60
-        ok, result = start_background_process(["python3", FOCUS_SCRIPT, "start", str(minutes)])
-        if not ok:
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": result}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            remaining_seconds = minutes * 60
+            ok, result = start_background_process(["python3", FOCUS_SCRIPT, "start", str(minutes)])
+            if not ok:
+                self._send_json_response(False, None, f"无法启动计时进程: {result}", 400)
+                return
 
-        proc = result
-        _save_state({
-            "status": "running",
-            "pid": proc.pid,
-            "remaining_seconds": remaining_seconds,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "total_seconds": remaining_seconds,
-            "mode": "start",
-        })
-        self._set_json_headers(200)
-        resp = {"ok": True, "message": "started"}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+            proc = result
+            now = datetime.now()
+            _save_state({
+                "status": "running",
+                "pid": proc.pid,
+                "start_time": now.isoformat(timespec="seconds"),
+                "duration_minutes": minutes,
+                "end_time": now.timestamp() + remaining_seconds,
+                "mode": "start",
+            })
+            self._send_json_response(True, {"message": "started"})
+        except Exception as e:
+            self._send_json_response(False, None, f"启动失败: {str(e)}", 500)
 
     def _handle_pomodoro(self):
-        state = _load_state()
-        if state.get("status") in ("running", "paused"):
-            _do_stop()
+        try:
+            state = _load_state()
+            if state.get("status") in ("running", "paused"):
+                _do_stop()
 
-        ok, result = start_background_process(["python3", FOCUS_SCRIPT, "pomodoro"])
-        if not ok:
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": result}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            ok, result = start_background_process(["python3", FOCUS_SCRIPT, "pomodoro"])
+            if not ok:
+                self._send_json_response(False, None, f"无法启动番茄钟: {result}", 400)
+                return
 
-        proc = result
-        remaining_seconds = 25 * 60
-        _save_state({
-            "status": "running",
-            "pid": proc.pid,
-            "remaining_seconds": remaining_seconds,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "total_seconds": remaining_seconds,
-            "mode": "pomodoro",
-        })
-        self._set_json_headers(200)
-        resp = {"ok": True, "message": "started"}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+            proc = result
+            remaining_seconds = 25 * 60
+            now = datetime.now()
+            _save_state({
+                "status": "running",
+                "pid": proc.pid,
+                "start_time": now.isoformat(timespec="seconds"),
+                "duration_minutes": 25,
+                "end_time": now.timestamp() + remaining_seconds,
+                "mode": "pomodoro",
+            })
+            self._send_json_response(True, {"message": "started"})
+        except Exception as e:
+            self._send_json_response(False, None, f"启动番茄钟失败: {str(e)}", 500)
 
     def _handle_stats(self):
-        ok, output = run_short_command(["python3", FOCUS_SCRIPT, "stats"])
-        status = 200 if ok else 500
-        self._set_json_headers(status)
-        resp = {"ok": ok, "output": output}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+        try:
+            ok, output = run_short_command(["python3", FOCUS_SCRIPT, "stats"])
+            if ok:
+                self._send_json_response(True, {"output": output})
+            else:
+                self._send_json_response(False, None, f"获取统计失败: {output}", 500)
+        except Exception as e:
+            self._send_json_response(False, None, f"获取统计失败: {str(e)}", 500)
+
+    def _handle_history(self):
+        try:
+            ok, output = run_short_command(["python3", FOCUS_SCRIPT, "history"])
+            if ok:
+                try:
+                    history = json.loads((output or "").strip())
+                    if not isinstance(history, list):
+                        history = []
+                except json.JSONDecodeError:
+                    history = []
+                self._send_json_response(True, {"history": history})
+            else:
+                self._send_json_response(True, {"history": []})  # 失败时返回空列表
+        except Exception as e:
+            self._send_json_response(True, {"history": []})  # 异常时返回空列表
 
     def _handle_status(self):
-        ok, output = run_short_command(["python3", FOCUS_SCRIPT, "status"])
-        if ok:
+        try:
+            ok, output = run_short_command(["python3", FOCUS_SCRIPT, "status"])
+            if ok:
+                try:
+                    data = json.loads((output or "").strip())
+                    if not isinstance(data, dict):
+                        data = {"status": "idle", "running": False, "remaining_seconds": None}
+                except json.JSONDecodeError:
+                    data = {"status": "idle", "running": False, "remaining_seconds": None}
+                self._send_json_response(True, data)
+            else:
+                # 命令执行失败，返回 idle 状态
+                self._send_json_response(True, {"status": "idle", "running": False, "remaining_seconds": None})
+        except Exception as e:
+            # 异常时返回 idle 状态
+            self._send_json_response(True, {"status": "idle", "running": False, "remaining_seconds": None})
+
+    def _handle_pause(self):
+        try:
+            ok, output = run_short_command(["python3", FOCUS_SCRIPT, "status"])
+            if not ok:
+                self._send_json_response(False, None, "无法获取当前状态", 500)
+                return
+
             try:
                 data = json.loads((output or "").strip())
             except json.JSONDecodeError:
-                data = {"status": "idle", "running": False, "remaining_seconds": None}
-        else:
-            data = {"status": "idle", "running": False, "remaining_seconds": None, "error": output}
-        self._set_json_headers(200)
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+                data = {}
+            
+            if data.get("status") != "running":
+                self._send_json_response(False, None, "当前没有正在运行的计时，无法暂停。", 400)
+                return
 
-    def _handle_pause(self):
-        ok, output = run_short_command(["python3", FOCUS_SCRIPT, "status"])
-        try:
-            data = json.loads((output or "").strip())
-        except json.JSONDecodeError:
-            data = {}
-        if data.get("status") != "running":
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": "当前没有正在运行的计时，无法暂停。"}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            remaining = data.get("remaining_seconds")
+            if not isinstance(remaining, (int, float)) or remaining < 0:
+                remaining = 0
 
-        remaining = data.get("remaining_seconds")
-        if not isinstance(remaining, (int, float)) or remaining < 0:
-            remaining = 0
-
-        state_before = _load_state()
-        mode = state_before.get("mode")
-        _do_stop()
-        _save_state({
-            "status": "paused",
-            "pid": None,
-            "remaining_seconds": int(remaining),
-            "started_at": None,
-            "mode": mode,
-        })
-        self._set_json_headers(200)
-        resp = {"ok": True, "message": "paused"}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+            state_before = _load_state()
+            mode = state_before.get("mode")
+            _do_stop()
+            _save_state({
+                "status": "paused",
+                "pid": None,
+                "remaining_seconds": int(remaining),
+                "start_time": None,
+                "duration_minutes": None,
+                "end_time": None,
+                "mode": mode,
+            })
+            self._send_json_response(True, {"message": "paused"})
+        except Exception as e:
+            self._send_json_response(False, None, f"暂停失败: {str(e)}", 500)
 
     def _handle_resume(self):
-        state = _load_state()
-        if state.get("status") != "paused":
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": "当前不是暂停状态，无法恢复。"}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+        try:
+            state = _load_state()
+            if state.get("status") != "paused":
+                self._send_json_response(False, None, "当前不是暂停状态，无法恢复。", 400)
+                return
 
-        remaining = state.get("remaining_seconds")
-        if not isinstance(remaining, (int, float)) or remaining <= 0:
-            _save_state({"status": "idle", "pid": None, "remaining_seconds": None, "started_at": None, "mode": None})
-            self._set_json_headers(400)
-            resp = {"ok": False, "message": "剩余时间为 0，无法恢复。"}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            remaining = state.get("remaining_seconds")
+            if not isinstance(remaining, (int, float)) or remaining <= 0:
+                _save_state({"status": "idle", "pid": None, "start_time": None, "duration_minutes": None, "end_time": None, "mode": None})
+                self._send_json_response(False, None, "剩余时间为 0，无法恢复。", 400)
+                return
 
-        ok, result = start_background_process(["python3", FOCUS_SCRIPT, "start_seconds", str(int(remaining))])
-        if not ok:
-            self._set_json_headers(500)
-            resp = {"ok": False, "message": result}
-            self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
-            return
+            ok, result = start_background_process(["python3", FOCUS_SCRIPT, "start_seconds", str(int(remaining))])
+            if not ok:
+                self._send_json_response(False, None, f"无法恢复计时: {result}", 500)
+                return
 
-        proc = result
-        _save_state({
-            "status": "running",
-            "pid": proc.pid,
-            "remaining_seconds": int(remaining),
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "total_seconds": int(remaining),
-            "mode": state.get("mode", "start"),
-        })
-        self._set_json_headers(200)
-        resp = {"ok": True, "message": "resumed"}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+            proc = result
+            now = datetime.now()
+            duration_minutes = remaining / 60.0
+            _save_state({
+                "status": "running",
+                "pid": proc.pid,
+                "start_time": now.isoformat(timespec="seconds"),
+                "duration_minutes": duration_minutes,
+                "end_time": now.timestamp() + remaining,
+                "mode": state.get("mode", "start"),
+            })
+            self._send_json_response(True, {"message": "resumed"})
+        except Exception as e:
+            self._send_json_response(False, None, f"恢复失败: {str(e)}", 500)
 
     def _handle_stop(self):
-        _do_stop()
-        self._set_json_headers(200)
-        resp = {"ok": True, "message": "stopped"}
-        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
+        try:
+            _do_stop()
+            self._send_json_response(True, {"message": "stopped"})
+        except Exception as e:
+            self._send_json_response(False, None, f"停止失败: {str(e)}", 500)
 
 
 def run_server():

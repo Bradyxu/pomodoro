@@ -97,6 +97,94 @@
       line-height: 1.5;
       white-space: pre-wrap;
     }
+    #history {
+      background: #f8f8f8;
+      padding: 12px;
+      border-radius: 8px;
+      max-height: 200px;
+      overflow: auto;
+      font-size: 13px;
+    }
+    .history-item {
+      padding: 6px 0;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .history-item:last-child {
+      border-bottom: none;
+    }
+    .history-time {
+      color: #666;
+      font-size: 12px;
+    }
+    .history-duration {
+      font-weight: 500;
+      color: #333;
+    }
+    .history-completed {
+      color: #34c759;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+    .history-incomplete {
+      color: #ff9500;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+    .completion-animation {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      animation: fadeIn 0.3s ease-in;
+    }
+    .completion-animation.hidden {
+      display: none;
+    }
+    .thumb-icon {
+      font-size: 120px;
+      animation: bounce 0.6s ease-in-out;
+      margin-bottom: 20px;
+    }
+    .completion-text {
+      font-size: 32px;
+      font-weight: 600;
+      color: #ffffff;
+      text-align: center;
+      animation: slideUp 0.5s ease-out 0.2s both;
+    }
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+    @keyframes bounce {
+      0%, 100% {
+        transform: translateY(0) scale(1);
+      }
+      50% {
+        transform: translateY(-20px) scale(1.1);
+      }
+    }
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
   </style>
 </head>
 <body>
@@ -109,7 +197,6 @@
       <input id="minutes" type="number" value="25" min="1" />
       <button id="startBtn">Start</button>
       <button id="pomodoroBtn" class="secondary">Pomodoro</button>
-      <button id="statsBtn">Stats</button>
       <button id="pauseBtn">Pause</button>
       <button id="stopBtn" class="danger">Stop</button>
     </div>
@@ -117,24 +204,41 @@
     <div class="countdown" id="countdown">00:00</div>
     <div class="status" id="statusText">Status: unknown</div>
 
-    <div class="section-title">Logs / Stats</div>
-    <pre id="log"></pre>
+    <div class="section-title">Focus History</div>
+    <div id="history"></div>
+
+    <!-- 完成动画 -->
+    <div id="completionAnimation" class="completion-animation hidden">
+      <div class="thumb-icon">👍</div>
+      <div class="completion-text">Congratulations! Keep Working</div>
+    </div>
   </div>
 
   <script>
-    const logEl = document.getElementById('log');
     const statusEl = document.getElementById('statusText');
     const countdownEl = document.getElementById('countdown');
+    const historyEl = document.getElementById('history');
     const startBtn = document.getElementById('startBtn');
     const pomodoroBtn = document.getElementById('pomodoroBtn');
-    const statsBtn = document.getElementById('statsBtn');
     const pauseBtn = document.getElementById('pauseBtn');
     const stopBtn = document.getElementById('stopBtn');
+    const completionAnimation = document.getElementById('completionAnimation');
+    
+    let wasRunning = false;  // 跟踪之前是否在运行状态
 
-    function appendLog(text) {
-      const now = new Date().toLocaleTimeString();
-      logEl.textContent += `[${now}] ${text}\n`;
-      logEl.scrollTop = logEl.scrollHeight;
+    // 本地倒计时状态（用于平滑显示，避免跳秒）
+    let localRemainingSeconds = null;
+    let localStatus = 'idle';
+    let countdownInterval = null;
+    let countdownStartTime = null;  // 倒计时开始的时间戳
+    let countdownTargetSeconds = null;  // 目标剩余秒数
+
+    function showCompletionAnimation() {
+      completionAnimation.classList.remove('hidden');
+      // 3秒后自动隐藏
+      setTimeout(() => {
+        completionAnimation.classList.add('hidden');
+      }, 3000);
     }
 
     function renderCountdown(remainingSeconds) {
@@ -148,124 +252,316 @@
       countdownEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
+    function formatTime(isoString) {
+      try {
+        const date = new Date(isoString);
+        return date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      } catch (e) {
+        return isoString;
+      }
+    }
+
+    function renderHistory(history) {
+      if (!history || history.length === 0) {
+        historyEl.innerHTML = '<div style="color: #999; font-size: 12px;">暂无历史记录</div>';
+        return;
+      }
+      const items = history.slice().reverse().map(item => {
+        const timeStr = formatTime(item.start_time);
+        const duration = item.duration_minutes;
+        const completed = item.completed;
+        const statusClass = completed ? 'history-completed' : 'history-incomplete';
+        const statusText = completed ? '✓ 已完成' : '✗ 未完成';
+        return `
+          <div class="history-item">
+            <div class="history-time">${timeStr}</div>
+            <div>
+              <span class="history-duration">${duration} 分钟</span>
+              <span class="${statusClass}">${statusText}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+      historyEl.innerHTML = items;
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch('/history');
+        if (!res.ok) {
+          renderHistory([]);
+          return;
+        }
+        const response = await res.json();
+        // 处理新的响应格式
+        if (response.success && response.data && Array.isArray(response.data.history)) {
+          renderHistory(response.data.history);
+        } else if (response.history && Array.isArray(response.history)) {
+          // 兼容旧格式
+          renderHistory(response.history);
+        } else {
+          renderHistory([]);
+        }
+      } catch (e) {
+        renderHistory([]);
+      }
+    }
+
+    function startLocalCountdown() {
+      // 如果已经有倒计时在运行，不要重启（避免跳秒）
+      if (countdownInterval) {
+        return;
+      }
+
+      // 如果状态是 running，启动本地倒计时
+      if (localStatus === 'running' && localRemainingSeconds !== null && localRemainingSeconds > 0) {
+        // 记录开始时间和目标秒数
+        countdownStartTime = Date.now();
+        countdownTargetSeconds = localRemainingSeconds;
+        
+        countdownInterval = setInterval(() => {
+          if (localStatus === 'running' && countdownTargetSeconds !== null) {
+            // 基于时间戳计算剩余时间，确保精确
+            const elapsed = Math.floor((Date.now() - countdownStartTime) / 1000);
+            const remaining = Math.max(0, countdownTargetSeconds - elapsed);
+            
+            localRemainingSeconds = remaining;
+            renderCountdown(remaining);
+            
+            if (remaining <= 0) {
+              clearInterval(countdownInterval);
+              countdownInterval = null;
+              countdownStartTime = null;
+              countdownTargetSeconds = null;
+            }
+          } else {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+            countdownStartTime = null;
+            countdownTargetSeconds = null;
+          }
+        }, 100);  // 每100ms更新一次，确保显示流畅
+      }
+    }
+
     async function refreshStatus() {
+      const previousStatus = localStatus;  // 在 try 外定义，catch 中可访问
       try {
         const res = await fetch('/status');
-        const data = await res.json();
+        if (!res.ok) {
+          // 服务器返回错误状态码
+          if (previousStatus === 'running' && wasRunning) {
+            statusEl.textContent = 'Status: Timer stopped';
+            wasRunning = false;
+          } else {
+            statusEl.textContent = 'Status: Server offline';
+          }
+          return;
+        }
+        
+        const response = await res.json();
+        
+        // 检查新的响应格式
+        if (response.success === false) {
+          if (previousStatus === 'running' && wasRunning) {
+            statusEl.textContent = 'Status: Timer stopped';
+            wasRunning = false;
+          } else {
+            statusEl.textContent = 'Status: Server offline';
+          }
+          return;
+        }
+        
+        // 提取实际数据
+        const data = response.data || response;  // 兼容新旧格式
         const status = data.status || (data.running ? 'running' : 'idle');
         const remaining = data.remaining_seconds;
 
+        localStatus = status;
+
         if (status === 'running') {
+          wasRunning = true;
           statusEl.textContent = 'Status: running';
           startBtn.disabled = true;
           pomodoroBtn.disabled = true;
           pauseBtn.disabled = false;
           pauseBtn.textContent = 'Pause';
+          
+          // 只在状态变化时或倒计时未启动时更新/启动
+          if (previousStatus !== 'running') {
+            // 状态刚变为 running，更新本地倒计时并启动
+            if (remaining !== null && remaining !== undefined) {
+              localRemainingSeconds = remaining;
+            }
+            startLocalCountdown();
+          } else if (remaining !== null && remaining !== undefined) {
+            // 状态已经是 running，只在差值较大时校准（避免频繁重置导致跳秒）
+            const currentRemaining = countdownTargetSeconds !== null 
+              ? Math.max(0, countdownTargetSeconds - Math.floor((Date.now() - countdownStartTime) / 1000))
+              : localRemainingSeconds;
+            const diff = Math.abs(currentRemaining - remaining);
+            if (diff > 2) {
+              // 差值超过2秒才校准，重新设置倒计时起点
+              countdownStartTime = Date.now();
+              countdownTargetSeconds = remaining;
+              localRemainingSeconds = remaining;
+            }
+            // 确保倒计时在运行
+            startLocalCountdown();
+          }
         } else if (status === 'paused') {
+          wasRunning = false;  // 暂停不算完成
           statusEl.textContent = 'Status: paused';
           startBtn.disabled = true;
           pomodoroBtn.disabled = true;
           pauseBtn.disabled = false;
           pauseBtn.textContent = 'Resume';
+          // 暂停时停止本地倒计时
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          countdownStartTime = null;
+          countdownTargetSeconds = null;
+          if (remaining !== null && remaining !== undefined) {
+            localRemainingSeconds = remaining;
+          }
+          renderCountdown(remaining);
         } else {
+          // idle 状态
+          // 检测是否是从 running 自然完成（不是 Stop）
+          if (previousStatus === 'running' && wasRunning && remaining === null) {
+            // 从 running 变为 idle，且剩余时间为 null，说明是自然完成
+            showCompletionAnimation();
+          }
+          wasRunning = false;
+          
           statusEl.textContent = 'Status: idle';
           startBtn.disabled = false;
           pomodoroBtn.disabled = false;
           pauseBtn.disabled = false;
           pauseBtn.textContent = 'Pause';
+          // idle 时停止本地倒计时
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          countdownStartTime = null;
+          countdownTargetSeconds = null;
+          localRemainingSeconds = null;
+          renderCountdown(null);
         }
-
-        renderCountdown(remaining);
       } catch (e) {
-        statusEl.textContent = 'Status: error';
+        // 网络错误或解析错误：显示友好消息，保持上次有效状态
+        if (localStatus === 'running' || localStatus === 'paused') {
+          // 如果之前有计时在运行，可能是服务器离线
+          statusEl.textContent = 'Status: Server offline';
+        } else if (previousStatus === 'running' && wasRunning) {
+          // 从 running 变为错误，可能是计时器停止
+          statusEl.textContent = 'Status: Timer stopped';
+          wasRunning = false;
+        } else {
+          // 其他情况显示服务器离线
+          statusEl.textContent = 'Status: Server offline';
+        }
+        // 不调用 renderCountdown，保持当前显示
       }
     }
 
     startBtn.addEventListener('click', async () => {
       const minutesInput = document.getElementById('minutes');
       const minutes = parseInt(minutesInput.value || '25', 10);
-      appendLog(`POST /start {minutes: ${minutes}}`);
       try {
         const res = await fetch('/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ minutes }),
         });
-        const data = await res.json();
-        appendLog(data.message || JSON.stringify(data));
+        const response = await res.json();
+        if (!response.success) {
+          // 错误已在 refreshStatus 中处理
+        }
       } catch (e) {
-        appendLog('Error: failed to call /start');
+        // 网络错误，refreshStatus 会处理
       }
-      refreshStatus();
+      // 立即从后端获取最新状态
+      await refreshStatus();
     });
 
     pomodoroBtn.addEventListener('click', async () => {
-      appendLog('POST /pomodoro');
       try {
         const res = await fetch('/pomodoro', { method: 'POST' });
-        const data = await res.json();
-        appendLog(data.message || JSON.stringify(data));
-      } catch (e) {
-        appendLog('Error: failed to call /pomodoro');
-      }
-      refreshStatus();
-    });
-
-    statsBtn.addEventListener('click', async () => {
-      appendLog('GET /stats');
-      try {
-        const res = await fetch('/stats');
-        const data = await res.json();
-        if (data.ok) {
-          appendLog(data.output || '(no output)');
-        } else {
-          appendLog('Error: ' + (data.output || 'failed to get stats'));
+        const response = await res.json();
+        if (!response.success) {
+          // 错误已在 refreshStatus 中处理
         }
       } catch (e) {
-        appendLog('Error: failed to call /stats');
+        // 网络错误，refreshStatus 会处理
       }
+      // 立即从后端获取最新状态
+      await refreshStatus();
     });
 
     pauseBtn.addEventListener('click', async () => {
       const isPaused = pauseBtn.textContent === 'Resume';
       if (isPaused) {
-        appendLog('POST /resume');
         try {
           const res = await fetch('/resume', { method: 'POST' });
-          const data = await res.json();
-          appendLog(data.message || JSON.stringify(data));
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
+          }
         } catch (e) {
-          appendLog('Error: failed to call /resume');
+          // 网络错误，refreshStatus 会处理
         }
       } else {
-        appendLog('POST /pause');
+        wasRunning = false;  // 暂停不算完成
         try {
           const res = await fetch('/pause', { method: 'POST' });
-          const data = await res.json();
-          appendLog(data.message || JSON.stringify(data));
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
+          }
         } catch (e) {
-          appendLog('Error: failed to call /pause');
+          // 网络错误，refreshStatus 会处理
         }
       }
-      refreshStatus();
+      // 立即从后端获取最新状态
+      await refreshStatus();
     });
 
     stopBtn.addEventListener('click', async () => {
-      appendLog('POST /stop');
+      wasRunning = false;  // Stop 不算完成
       try {
         const res = await fetch('/stop', { method: 'POST' });
-        const data = await res.json();
-        appendLog(data.message || JSON.stringify(data));
+        const response = await res.json();
+        if (!response.success) {
+          // 即使失败也尝试刷新状态
+        }
       } catch (e) {
-        appendLog('Error: failed to call /stop');
+        // 网络错误，refreshStatus 会处理
       }
-      countdownEl.textContent = '00:00';
-      statusEl.textContent = 'Status: idle';
-      refreshStatus();
+      // 立即从后端获取最新状态，确保显示正确
+      await refreshStatus();
     });
 
-    refreshStatus();
-    setInterval(refreshStatus, 1000);
+    // 页面加载时立即从后端获取状态（确保刷新后恢复正确状态）
+    (async function init() {
+      // 立即获取状态，不等待
+      await refreshStatus();
+      await loadHistory();
+      
+      // 每 2 秒从后端同步一次状态（校准本地倒计时）
+      setInterval(refreshStatus, 2000);
+      // 每 5 秒刷新一次历史记录
+      setInterval(loadHistory, 5000);
+    })();
   </script>
 </body>
 </html>

@@ -1,0 +1,27 @@
+[
+  {
+    "start_time": "2026-02-25T18:41:52",
+    "duration_minutes": 1,
+    "completed": true
+  },
+  {
+    "start_time": "2026-02-25T18:53:00",
+    "duration_minutes": 2,
+    "completed": true
+  },
+  {
+    "start_time": "2026-02-25T19:24:54",
+    "duration_minutes": 1,
+    "completed": true
+  },
+  {
+    "start_time": "2026-02-26T01:06:38",
+    "duration_minutes": 1,
+    "completed": true
+  },
+  {
+    "start_time": "2026-02-26T01:07:47",
+    "duration_minutes": 1,
+    "completed": true
+  }
+]
