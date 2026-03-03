@@ -3,8 +3,15 @@
 <head>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <meta charset="UTF-8" />
-  <title>Brady的番茄专注 to do</title>
+  <title>Pomodoro — Zimeng Focus</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#ff3b3b">
   <style>
+    :root {
+      --accent: #2f9e44; /* default: running green */
+      --accent2: rgba(47, 158, 68, 0.18);
+      --text: #0f172a;
+    }
     body {
       margin: 0;
       font-family: 'Inter', sans-serif;
@@ -15,21 +22,40 @@
       min-height: 100vh;
     }
     .container {
-      background: rgba(255, 255, 255, 0.75);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
 
       max-width: 640px;
       width: 100%;
 
       border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
 
       box-shadow:
-        0 20px 60px rgba(0, 0, 0, 0.12),
-        0 8px 24px rgba(0, 0, 0, 0.08);
+        0 20px 60px rgba(0, 0, 0, 0.10),
+        0 8px 24px rgba(0, 0, 0, 0.06);
 
       padding: 40px 36px;
       transition: all 0.3s ease;
+    }
+    .container.is-running {
+      box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.10),
+        0 8px 24px rgba(0, 0, 0, 0.06),
+        0 0 0 6px var(--accent2);
+    }
+    .container.is-paused {
+      --accent: #2563eb;
+      --accent2: rgba(37, 99, 235, 0.18);
+      box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.10),
+        0 8px 24px rgba(0, 0, 0, 0.06),
+        0 0 0 6px var(--accent2);
+    }
+    .container.is-idle {
+      --accent: #64748b;
+      --accent2: rgba(100, 116, 139, 0.16);
     }
     .icon-large {
       font-size: 80px;
@@ -95,8 +121,12 @@
       margin: 24px 0;
       letter-spacing: -2px;
       text-align: center;
-      color: #1d1d1f;
+      color: var(--text);
       line-height: 1.1;
+    }
+    .container.is-running #timer,
+    .container.is-paused #timer {
+      color: var(--accent);
     }
     .section-title {
       font-size: 14px;
@@ -415,6 +445,19 @@
 
         localStatus = status;
 
+        // 根据状态更新 container 的 class，实现动态状态色
+        const card = document.querySelector('.container');
+        if (card) {
+          card.classList.remove('is-idle', 'is-running', 'is-paused');
+          if (status === 'running') {
+            card.classList.add('is-running');
+          } else if (status === 'paused') {
+            card.classList.add('is-paused');
+          } else {
+            card.classList.add('is-idle');
+          }
+        }
+
         if (status === 'running') {
           wasRunning = true;
           statusEl.textContent = 'Status: running';
@@ -487,6 +530,7 @@
           pomodoroBtn.disabled = false;
           pauseBtn.disabled = false;
           pauseBtn.textContent = 'Pause';
+          stopBtn.disabled = false;  // idle 状态时 Stop 按钮应该可用
           // idle 时停止本地倒计时
           if (countdownInterval) {
             clearInterval(countdownInterval);
@@ -589,48 +633,48 @@
         return;
       }
       actionInProgress = true;
-      startBtn.disabled = true;
-      pomodoroBtn.disabled = true;
-      pauseBtn.disabled = true;
-      stopBtn.disabled = true;
+      
+      const isPaused = localStatus === 'paused';  // 使用 localStatus 而不是 textContent
+      
+      // 立即更新 UI，提升响应速度（乐观更新）
+      if (isPaused) {
+        // Resume 操作
+        wasManuallyStopped = false;  // Resume 后重置标志，允许自然完成时显示动画
+        pauseBtn.textContent = 'Pause';
+        pauseBtn.disabled = true;  // 暂时禁用，等待后端响应
+        localStatus = 'running';  // 乐观更新状态
+      } else {
+        // Pause 操作
+        wasRunning = false;  // 暂停不算完成，防止误触发完成动画
+        wasManuallyStopped = true;  // 标记为手动停止
+        suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
+        pauseBtn.textContent = 'Resume';
+        pauseBtn.disabled = true;  // 暂时禁用，等待后端响应
+        localStatus = 'paused';  // 乐观更新状态
+      }
       
       try {
-        const isPaused = localStatus === 'paused';  // 使用 localStatus 而不是 textContent
-        // 立即更新 UI，提升响应速度
         if (isPaused) {
-          // Resume 操作
-          wasManuallyStopped = false;  // Resume 后重置标志，允许自然完成时显示动画
-          pauseBtn.textContent = 'Pause';
-          try {
-            const res = await fetch('/resume', { method: 'POST' });
-            const response = await res.json();
-            if (!response.success) {
-              // 错误已在 refreshStatus 中处理
-            }
-          } catch (e) {
-            // 网络错误，refreshStatus 会处理
+          const res = await fetch('/resume', { method: 'POST' });
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
           }
         } else {
-          // Pause 操作
-          wasRunning = false;  // 暂停不算完成，防止误触发完成动画
-          wasManuallyStopped = true;  // 标记为手动停止
-          suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
-          pauseBtn.textContent = 'Resume';
-          try {
-            const res = await fetch('/pause', { method: 'POST' });
-            const response = await res.json();
-            if (!response.success) {
-              // 错误已在 refreshStatus 中处理
-            }
-          } catch (e) {
-            // 网络错误，refreshStatus 会处理
+          const res = await fetch('/pause', { method: 'POST' });
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
           }
         }
-        // 立即从后端获取最新状态
-        await refreshStatus();
+        // 从后端获取最新状态（异步，不阻塞）
+        refreshStatus().catch(() => {});  // 忽略错误，避免阻塞
+      } catch (e) {
+        // 网络错误，refreshStatus 会处理
+        refreshStatus().catch(() => {});  // 忽略错误，避免阻塞
       } finally {
         actionInProgress = false;
-        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+        // 按钮状态由 refreshStatus 更新
       }
     });
 
@@ -640,30 +684,43 @@
         return;
       }
       actionInProgress = true;
-      startBtn.disabled = true;
-      pomodoroBtn.disabled = true;
-      pauseBtn.disabled = true;
-      stopBtn.disabled = true;
+      
+      // 立即更新 UI，提升响应速度（乐观更新）
+      wasRunning = false;  // Stop 不算完成，必须在 refreshStatus 之前设置
+      wasManuallyStopped = true;  // 标记为手动停止，防止误触发完成动画
+      suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
+      localStatus = 'idle';  // 立即更新本地状态，防止 refreshStatus 误判
+      
+      // 立即更新按钮状态
+      startBtn.disabled = false;
+      pomodoroBtn.disabled = false;
+      pauseBtn.disabled = false;
+      pauseBtn.textContent = 'Pause';
+      stopBtn.disabled = true;  // 暂时禁用，等待后端响应
+      
+      // 立即更新倒计时显示
+      renderCountdown(null);
+      statusEl.textContent = 'Status: idle';
+      
+      // 立即更新 container class
+      const card = document.querySelector('.container');
+      if (card) {
+        card.classList.remove('is-idle', 'is-running', 'is-paused');
+        card.classList.add('is-idle');
+      }
       
       try {
-        wasRunning = false;  // Stop 不算完成，必须在 refreshStatus 之前设置
-        wasManuallyStopped = true;  // 标记为手动停止，防止误触发完成动画
-        suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
-        localStatus = 'idle';  // 立即更新本地状态，防止 refreshStatus 误判
-        try {
-          const res = await fetch('/stop', { method: 'POST' });
-          const response = await res.json();
-          if (!response.success) {
-            // 即使失败也尝试刷新状态
-          }
-        } catch (e) {
-          // 网络错误，refreshStatus 会处理
+        const res = await fetch('/stop', { method: 'POST' });
+        const response = await res.json();
+        if (!response.success) {
+          // 即使失败也尝试刷新状态
         }
-        // 立即从后端获取最新状态，确保显示正确
-        await refreshStatus();
+      } catch (e) {
+        // 网络错误，refreshStatus 会处理
       } finally {
         actionInProgress = false;
-        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+        // 从后端获取最新状态（异步，不阻塞）
+        refreshStatus().catch(() => {});  // 忽略错误，避免阻塞
       }
     });
 
