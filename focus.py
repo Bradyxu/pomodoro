@@ -11,8 +11,26 @@
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, date
+
+
+def _atomic_write_json(path: str, data) -> None:
+    """原子写入 JSON：先写临时文件，再 os.replace() 替换目标文件。"""
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        # 写入失败时清理临时文件
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_data_file_path() -> str:
@@ -64,11 +82,10 @@ def load_records():
 
 
 def save_records(records) -> None:
-    """将所有记录写回 JSON 文件。"""
+    """将所有记录写回 JSON 文件（原子写入）。"""
     path = get_data_file_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(path, records)
     except OSError:
         print("写入数据文件失败，请检查磁盘权限。", file=sys.stderr)
 
@@ -89,11 +106,10 @@ def load_state():
 
 
 def save_state(state: dict) -> None:
-    """写入 focus_state.json。"""
+    """写入 focus_state.json（原子写入）。"""
     path = get_state_file_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(path, state)
     except OSError:
         pass
 
@@ -147,11 +163,10 @@ def load_history():
 
 
 def save_history(history: list) -> None:
-    """保存专注历史记录。"""
+    """保存专注历史记录（原子写入）。"""
     path = get_history_file_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(path, history)
     except OSError:
         pass
 
@@ -366,7 +381,9 @@ def get_status_dict():
 
     if status == "running":
         pid = state.get("pid")
-        if not _is_process_alive(pid):
+        # 如果有 pid（CLI 模式），检查进程是否存活；
+        # 如果 pid 为 None（Web 纯状态模式），跳过进程检查，仅依赖时间戳。
+        if pid is not None and not _is_process_alive(pid):
             save_state(_idle_state())
             return {"status": "idle", "running": False, "remaining_seconds": None}
 

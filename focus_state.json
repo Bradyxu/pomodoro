@@ -1,7 +1,8 @@
 {
   "status": "idle",
   "pid": null,
-  "remaining_seconds": null,
-  "started_at": null,
+  "start_time": null,
+  "duration_minutes": null,
+  "end_time": null,
   "mode": null
 }
