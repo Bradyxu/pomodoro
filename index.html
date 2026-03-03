@@ -1,24 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <meta charset="UTF-8" />
   <title>Brady的番茄专注 to do</title>
   <style>
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f5f7;
       margin: 0;
-      padding: 24px;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #eef2f7, #dfe9f3);
       display: flex;
       justify-content: center;
+      align-items: center;
+      min-height: 100vh;
     }
     .container {
-      background: #ffffff;
+      background: rgba(255, 255, 255, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+
       max-width: 640px;
       width: 100%;
-      border-radius: 12px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-      padding: 24px 28px 28px;
+
+      border-radius: 20px;
+
+      box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.12),
+        0 8px 24px rgba(0, 0, 0, 0.08);
+
+      padding: 40px 36px;
+      transition: all 0.3s ease;
     }
     .icon-large {
       font-size: 80px;
@@ -26,8 +37,11 @@
       margin-bottom: 8px;
     }
     h1 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 24px;
       margin-top: 0;
-      font-size: 24px;
       text-align: center;
     }
     .row {
@@ -75,11 +89,14 @@
       color: #555;
       margin-bottom: 12px;
     }
-    .countdown {
-      font-size: 40px;
-      font-weight: 600;
+    #timer {
+      font-size: 72px;
+      font-weight: 700;
+      margin: 24px 0;
+      letter-spacing: -2px;
       text-align: center;
-      margin: 8px 0 4px;
+      color: #1d1d1f;
+      line-height: 1.1;
     }
     .section-title {
       font-size: 14px;
@@ -201,7 +218,7 @@
       <button id="stopBtn" class="danger">Stop</button>
     </div>
 
-    <div class="countdown" id="countdown">00:00</div>
+    <div id="timer">00:00</div>
     <div class="status" id="statusText">Status: unknown</div>
 
     <div class="section-title">Focus History</div>
@@ -216,7 +233,7 @@
 
   <script>
     const statusEl = document.getElementById('statusText');
-    const countdownEl = document.getElementById('countdown');
+    const countdownEl = document.getElementById('timer');
     const historyEl = document.getElementById('history');
     const startBtn = document.getElementById('startBtn');
     const pomodoroBtn = document.getElementById('pomodoroBtn');
@@ -225,6 +242,10 @@
     const completionAnimation = document.getElementById('completionAnimation');
     
     let wasRunning = false;  // 跟踪之前是否在运行状态
+    let wasManuallyStopped = false;  // 标记是否手动停止（Stop/Pause），防止误触发完成动画
+    let refreshInFlight = false;  // refreshStatus 单飞锁：同一时间只允许一个 refreshStatus 在跑
+    let actionInProgress = false;  // 按钮操作锁：执行中禁用按钮，避免连点并发
+    let suppressCompletionUntil = 0;  // 抑制完成动画的时间戳（Stop/Pause 后 4 秒内不触发）
 
     // 本地倒计时状态（用于平滑显示，避免跳秒）
     let localRemainingSeconds = null;
@@ -351,7 +372,16 @@
     }
 
     async function refreshStatus() {
+      // 单飞锁：如果已经有 refreshStatus 在运行，直接返回
+      if (refreshInFlight) {
+        return;
+      }
+      refreshInFlight = true;
+      
       const previousStatus = localStatus;  // 在 try 外定义，catch 中可访问
+      const wasManuallyStoppedBefore = wasManuallyStopped;  // 保存当前值，防止异步过程中被修改
+      const suppressUntil = suppressCompletionUntil;  // 保存抑制时间戳
+      
       try {
         const res = await fetch('/status');
         if (!res.ok) {
@@ -417,6 +447,8 @@
           }
         } else if (status === 'paused') {
           wasRunning = false;  // 暂停不算完成
+          // 注意：如果是从按钮点击来的，wasManuallyStopped 已经在按钮处理中设置了
+          // 这里不需要设置，因为可能是从后端状态同步来的
           statusEl.textContent = 'Status: paused';
           startBtn.disabled = true;
           pomodoroBtn.disabled = true;
@@ -435,12 +467,20 @@
           renderCountdown(remaining);
         } else {
           // idle 状态
-          // 检测是否是从 running 自然完成（不是 Stop）
-          if (previousStatus === 'running' && wasRunning && remaining === null) {
+          // 检测是否是从 running 自然完成（不是 Stop/Pause）
+          // 必须同时满足：
+          // 1. 之前是 running
+          // 2. wasRunning 为 true
+          // 3. 剩余时间为 null
+          // 4. 不是手动停止（使用保存的值 wasManuallyStoppedBefore）
+          // 5. 当前时间已超过抑制时间（suppressUntil）
+          if (previousStatus === 'running' && wasRunning && remaining === null && !wasManuallyStoppedBefore && Date.now() > suppressUntil) {
             // 从 running 变为 idle，且剩余时间为 null，说明是自然完成
             showCompletionAnimation();
           }
+          // 重置状态标志
           wasRunning = false;
+          // wasManuallyStopped 在 Start/Pomodoro/Resume 时会被重置，这里不需要重置
           
           statusEl.textContent = 'Status: idle';
           startBtn.disabled = false;
@@ -471,84 +511,160 @@
           statusEl.textContent = 'Status: Server offline';
         }
         // 不调用 renderCountdown，保持当前显示
+      } finally {
+        // 释放单飞锁
+        refreshInFlight = false;
       }
     }
 
     startBtn.addEventListener('click', async () => {
-      const minutesInput = document.getElementById('minutes');
-      const minutes = parseInt(minutesInput.value || '25', 10);
-      try {
-        const res = await fetch('/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ minutes }),
-        });
-        const response = await res.json();
-        if (!response.success) {
-          // 错误已在 refreshStatus 中处理
-        }
-      } catch (e) {
-        // 网络错误，refreshStatus 会处理
+      // 按钮操作锁：如果已有操作在进行，直接返回
+      if (actionInProgress) {
+        return;
       }
-      // 立即从后端获取最新状态
-      await refreshStatus();
+      actionInProgress = true;
+      startBtn.disabled = true;
+      pomodoroBtn.disabled = true;
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      
+      try {
+        wasManuallyStopped = false;  // 重置标志，允许自然完成时显示动画
+        const minutesInput = document.getElementById('minutes');
+        const minutes = parseInt(minutesInput.value || '25', 10);
+        try {
+          const res = await fetch('/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ minutes }),
+          });
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
+          }
+        } catch (e) {
+          // 网络错误，refreshStatus 会处理
+        }
+        // 立即从后端获取最新状态
+        await refreshStatus();
+      } finally {
+        actionInProgress = false;
+        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+      }
     });
 
     pomodoroBtn.addEventListener('click', async () => {
-      try {
-        const res = await fetch('/pomodoro', { method: 'POST' });
-        const response = await res.json();
-        if (!response.success) {
-          // 错误已在 refreshStatus 中处理
-        }
-      } catch (e) {
-        // 网络错误，refreshStatus 会处理
+      // 按钮操作锁：如果已有操作在进行，直接返回
+      if (actionInProgress) {
+        return;
       }
-      // 立即从后端获取最新状态
-      await refreshStatus();
+      actionInProgress = true;
+      startBtn.disabled = true;
+      pomodoroBtn.disabled = true;
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      
+      try {
+        wasManuallyStopped = false;  // 重置标志，允许自然完成时显示动画
+        try {
+          const res = await fetch('/pomodoro', { method: 'POST' });
+          const response = await res.json();
+          if (!response.success) {
+            // 错误已在 refreshStatus 中处理
+          }
+        } catch (e) {
+          // 网络错误，refreshStatus 会处理
+        }
+        // 立即从后端获取最新状态
+        await refreshStatus();
+      } finally {
+        actionInProgress = false;
+        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+      }
     });
 
     pauseBtn.addEventListener('click', async () => {
-      const isPaused = pauseBtn.textContent === 'Resume';
-      if (isPaused) {
-        try {
-          const res = await fetch('/resume', { method: 'POST' });
-          const response = await res.json();
-          if (!response.success) {
-            // 错误已在 refreshStatus 中处理
-          }
-        } catch (e) {
-          // 网络错误，refreshStatus 会处理
-        }
-      } else {
-        wasRunning = false;  // 暂停不算完成
-        try {
-          const res = await fetch('/pause', { method: 'POST' });
-          const response = await res.json();
-          if (!response.success) {
-            // 错误已在 refreshStatus 中处理
-          }
-        } catch (e) {
-          // 网络错误，refreshStatus 会处理
-        }
+      // 按钮操作锁：如果已有操作在进行，直接返回
+      if (actionInProgress) {
+        return;
       }
-      // 立即从后端获取最新状态
-      await refreshStatus();
+      actionInProgress = true;
+      startBtn.disabled = true;
+      pomodoroBtn.disabled = true;
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      
+      try {
+        const isPaused = localStatus === 'paused';  // 使用 localStatus 而不是 textContent
+        // 立即更新 UI，提升响应速度
+        if (isPaused) {
+          // Resume 操作
+          wasManuallyStopped = false;  // Resume 后重置标志，允许自然完成时显示动画
+          pauseBtn.textContent = 'Pause';
+          try {
+            const res = await fetch('/resume', { method: 'POST' });
+            const response = await res.json();
+            if (!response.success) {
+              // 错误已在 refreshStatus 中处理
+            }
+          } catch (e) {
+            // 网络错误，refreshStatus 会处理
+          }
+        } else {
+          // Pause 操作
+          wasRunning = false;  // 暂停不算完成，防止误触发完成动画
+          wasManuallyStopped = true;  // 标记为手动停止
+          suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
+          pauseBtn.textContent = 'Resume';
+          try {
+            const res = await fetch('/pause', { method: 'POST' });
+            const response = await res.json();
+            if (!response.success) {
+              // 错误已在 refreshStatus 中处理
+            }
+          } catch (e) {
+            // 网络错误，refreshStatus 会处理
+          }
+        }
+        // 立即从后端获取最新状态
+        await refreshStatus();
+      } finally {
+        actionInProgress = false;
+        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+      }
     });
 
     stopBtn.addEventListener('click', async () => {
-      wasRunning = false;  // Stop 不算完成
-      try {
-        const res = await fetch('/stop', { method: 'POST' });
-        const response = await res.json();
-        if (!response.success) {
-          // 即使失败也尝试刷新状态
-        }
-      } catch (e) {
-        // 网络错误，refreshStatus 会处理
+      // 按钮操作锁：如果已有操作在进行，直接返回
+      if (actionInProgress) {
+        return;
       }
-      // 立即从后端获取最新状态，确保显示正确
-      await refreshStatus();
+      actionInProgress = true;
+      startBtn.disabled = true;
+      pomodoroBtn.disabled = true;
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      
+      try {
+        wasRunning = false;  // Stop 不算完成，必须在 refreshStatus 之前设置
+        wasManuallyStopped = true;  // 标记为手动停止，防止误触发完成动画
+        suppressCompletionUntil = Date.now() + 4000;  // 抑制完成动画 4 秒
+        localStatus = 'idle';  // 立即更新本地状态，防止 refreshStatus 误判
+        try {
+          const res = await fetch('/stop', { method: 'POST' });
+          const response = await res.json();
+          if (!response.success) {
+            // 即使失败也尝试刷新状态
+          }
+        } catch (e) {
+          // 网络错误，refreshStatus 会处理
+        }
+        // 立即从后端获取最新状态，确保显示正确
+        await refreshStatus();
+      } finally {
+        actionInProgress = false;
+        // 按钮状态由 refreshStatus 更新，这里不需要手动恢复
+      }
     });
 
     // 页面加载时立即从后端获取状态（确保刷新后恢复正确状态）
