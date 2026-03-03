@@ -32,8 +32,8 @@ from focus import (
 )
 
 
-HOST = "localhost"
-PORT = 5173
+HOST = "0.0.0.0"  # 监听所有接口，支持公网访问
+PORT = int(os.environ.get("PORT", 5173))  # Render 等平台会通过环境变量提供端口
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FOCUS_SCRIPT = os.path.join(BASE_DIR, "focus.py")
